@@ -62,7 +62,10 @@ const (
 	// counts as a plausible gap and how long silence has to last.
 	heartbeatKeepaliveMinGapMs = int64(5 * 1000)
 	heartbeatKeepaliveMaxGapMs = int64(300 * 1000)
-	heartbeatKeepaliveFloorMs  = int64(45 * 1000)
+	// The peer sends keepalives every 25s. A 45s floor would rebuild the
+	// device after a single lost keepalive; 60s tolerates one loss and only
+	// acts when two in a row are missing.
+	heartbeatKeepaliveFloorMs  = int64(60 * 1000)
 	heartbeatEscalateMillis    = 15000
 )
 
@@ -348,6 +351,13 @@ var _ E.Handler = (*wgSingErrorHandler)(nil)
 func (w wgSingErrorHandler) NewError(ctx context.Context, err error) {
 	if E.IsClosedOrCanceled(err) {
 		log.SingLogger.Debug(fmt.Sprintf("[WG](%s) connection closed: %s", w.name, err))
+		return
+	}
+	// EMSGSIZE ("message too long") is a per-datagram condition, not a dead
+	// link: the bind rebuilds the socket on its own. Escalating it to Error
+	// makes FlClash show a red banner for something that self-heals.
+	if strings.Contains(err.Error(), "message too long") {
+		log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", w.name, err))
 		return
 	}
 	log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", w.name, err))
