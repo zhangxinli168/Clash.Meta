@@ -103,6 +103,7 @@ type WireGuard struct {
 	// device cannot look like a peer that stopped answering.
 	lastRx        atomic.Int64
 	rxGapMs       atomic.Int64
+	lastKeepalive atomic.Int64
 	option        WireGuardOption
 	connectAddr   M.Socksaddr
 	localPrefixes []netip.Prefix
@@ -428,6 +429,7 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	}
 	outbound.runCtx, outbound.runCancel = context.WithCancel(context.Background())
 	outbound.bind = wireguard.NewClientBind(outbound.runCtx, wgSingErrorHandler{outbound.Name()}, singDialer, isConnect, outbound.connectAddr.AddrPort(), reserved)
+	outbound.bind.SetReceiveHook(outbound.markActivity)
 
 	if outbound.bind == nil {
 		return nil, E.New("failed to create wireguard client bind")
@@ -1039,6 +1041,7 @@ func (w *WireGuard) resetFull() error {
 func (w *WireGuard) rebindLocked() {
 	w.runCtx, w.runCancel = context.WithCancel(context.Background())
 	w.bind = wireguard.NewClientBind(w.runCtx, wgSingErrorHandler{w.Name()}, w.singDialer, w.isConnect, w.connectAddr.AddrPort(), w.bindReserved)
+	w.bind.SetReceiveHook(w.markActivity)
 }
 
 // startWatchdog arms the heartbeat monitor once per proxy.
@@ -1052,8 +1055,14 @@ func wgNowMillis() int64 {
 
 // markKeepalive records a keepalive from the peer and learns its cadence, so
 // the silence threshold follows whatever persistent-keepalive the peer uses.
+// markActivity records that the peer sent us something, keepalive or data.
+func (w *WireGuard) markActivity() {
+	w.lastRx.Store(wgNowMillis())
+}
+
 func (w *WireGuard) markKeepalive(now int64) {
-	previous := w.lastRx.Swap(now)
+	w.markActivity()
+	previous := w.lastKeepalive.Swap(now)
 	if previous == 0 {
 		return
 	}
